@@ -177,114 +177,63 @@ class Router:
         """Create hash of tabIndex for change detection"""
         return hashlib.md5(json.dumps(tab_index, sort_keys=True).encode()).hexdigest()
 
-    # def _update_faiss_index(self, tabs, tab_index):
-    #     """Update FAISS index with new tab data"""
-    #     try:
-    #         print("Processing embeddings and updating FAISS index...")
-
-    #         # Clear existing index
-    #         self.index = faiss.IndexFlatIP(self.dimension)
-    #         self.tab_embeddings = {}
-    #         self.tab_index_map = {}
-
-    #         if not tabs:
-    #             print("No tabs to process")
-    #             return
-
-    #         # Prepare batch for embedding
-    #         searchable_texts = []
-    #         tab_data_list = []
-
-    #         for tab in tabs:
-    #             # Create searchable text from title, URL, keyword and description
-    #             searchable_text = f"{tab.get('title', '')} {tab.get('url', '')} {tab.get("description","")} {tab.get('keywords', '')} {tab.get('ogDescription', '')}"
-    #             searchable_texts.append(searchable_text)
-    #             tab_data_list.append(tab)
-
-    #         # Batch encode all texts
-    #         embeddings = self.model.encode(searchable_texts)
-
-    #         # Add to FAISS index
-    #         self.index.add(embeddings.astype('float32'))
-
-    #         # Store tab data and create mapping
-    #         for i, (tab, embedding) in enumerate(zip(tab_data_list, embeddings)):
-    #             tab_id = tab.get('id')
-    #             window_id = tab.get('windowId')
-
-    #             self.tab_embeddings[f"{tab_id}_{window_id}"] = {
-    #                 'embedding': embedding,
-    #                 'tab_data': tab,
-    #                 'searchable_text': searchable_texts[i],
-    #                 'faiss_index': i
-    #             }
-
-    #             # Map tab_id to FAISS index position
-    #             self.tab_index_map[tab_id] = i
-
-    #         print(f"✅ FAISS index updated with {len(tabs)} tabs")
-
-    #         # Save to memory for persistence
-    #         self.save_to_memory()
-
-    #     except Exception as e:
-    #         print(f"Error updating FAISS index: {e}")
-
     def _update_faiss_index(self, tabs: List[Dict], tab_index: Any) -> None:
         """
         Update FAISS index with optimized tab embeddings for better search quality
+        Ensures index and tab_embeddings are always in sync, even after retriggering.
         """
         try:
             print("Processing embeddings and updating FAISS index...")
             
-            # Clear existing index
-            self.index = faiss.IndexFlatIP(self.dimension)
-            self.tab_embeddings = {}
-            self.tab_index_map = {}
-            
+            # Create a new index instead of clearing the old one
+            new_index = faiss.IndexFlatIP(self.dimension)
+            new_tab_embeddings = {}
+            new_tab_index_map = {}
+
             if not tabs:
                 print("No tabs to process")
                 return
-            
-            # Prepare optimized batch for embedding
+
             searchable_texts = []
             tab_data_list = []
-            
             for tab in tabs:
-                # Create enhanced searchable text with better structure
                 optimized_text = self._create_optimized_embedding_text(tab)
                 searchable_texts.append(optimized_text)
                 tab_data_list.append(tab)
-            
-            # Batch encode with optimized settings
+
             embeddings = self._encode_with_optimization(searchable_texts)
-            
-            # Normalize embeddings for better cosine similarity
             embeddings = self._normalize_embeddings(embeddings)
-            
-            # Add to FAISS index
-            self.index.add(embeddings.astype('float32'))
-            
-            # Store enhanced tab data and create mapping
+
+            # Add to new FAISS index (one vector per tab)
+            new_index.add(x=embeddings.astype('float32'))
+            print(f"[DEBUG] After adding, new FAISS index size: {new_index.ntotal}")
+            print(f"[DEBUG] After adding, new FAISS index size: {new_index.ntotal}")
+
             for i, (tab, embedding) in enumerate(zip(tab_data_list, embeddings)):
                 tab_id = tab.get('id')
                 window_id = tab.get('windowId')
+                tab_key = f"{tab_id}_{window_id}"
                 
-                self.tab_embeddings[f"{tab_id}_{window_id}"] = {
+                new_tab_embeddings[tab_key] = {
                     'embedding': embedding,
                     'tab_data': tab,
                     'searchable_text': searchable_texts[i],
                     'faiss_index': i,
-                    'text_hash': self._get_text_hash(searchable_texts[i])  # For deduplication
+                    'text_hash': self._get_text_hash(searchable_texts[i])
                 }
-                
-                self.tab_index_map[tab_id] = i
-            
-            print(f"✅ FAISS index updated with {len(tabs)} tabs")
+                new_tab_index_map[tab_id] = i
+
+            # Atomic update: replace old data with new data
+            self.index = new_index
+            self.tab_embeddings = new_tab_embeddings
+            self.tab_index_map = new_tab_index_map
+
+            print(f"✅ FAISS index updated with {len(tabs)} tabs (index size: {self.index.ntotal})")
             self.save_to_memory()
-            
         except Exception as e:
             print(f"Error updating FAISS index: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _create_optimized_embedding_text(self, tab: Dict) -> str:
         """
@@ -469,64 +418,89 @@ class Router:
         return bm25, corpus, tab_keys
     
     def search_tabs(self, query):
-        """Search tabs using FAISS semantic similarity"""
+        """Search tabs using FAISS semantic similarity with fallback to direct embedding comparison"""
         if not query or not self.tab_embeddings:
+            print("[DEBUG] Empty query or no tab embeddings.")
             return []
         
         try:
+            print(f"[DEBUG] search_tabs called with query: {query}")
+            print(f"[DEBUG] Number of tab_embeddings: {len(self.tab_embeddings)}")
+            print(f"[DEBUG] FAISS index size: {self.index.ntotal}")
             
             # Create query embedding
             query_embedding = self.model.encode([query])[0]
-            
-            # Search using FAISS
-            query_vector = query_embedding.reshape(1, -1).astype('float32')
-            
-            k = min(10, len(self.tab_embeddings))
-            
-            distances, indices = self.index.search(query_vector, k)
-            # print(f"Search results - distances: {distances}, indices: {indices}")
+            # normalize query vector
+            query_norm = np.linalg.norm(query_embedding)
+            if query_norm > 0:
+                query_embedding = query_embedding / query_norm
+            else:
+                query_embedding = np.zeros_like(query_embedding)
 
-            # --- 2. BM25 lexical search ---
-            bm25_model, corpus, tab_keys = self.build_bm25_corpus()
-            tokenized_query = self.tokenize(query)
-            bm25_scores = bm25_model.get_scores(tokenized_query)
-
-            
-            # Build results
+            # Try FAISS search first
             results = []
-            for i, (distance, idx) in enumerate(zip(distances[0], indices[0])):
+            try:
+                query_vector = query_embedding.reshape(1, -1).astype('float32')
+                k = min(10, len(self.tab_embeddings))
+                print(f"[DEBUG] k (top results to fetch): {k}")
+                # Search using FAISS with explicit parameter names
+                distances, indices = self.index.search(x=query_vector, k=k)
+                print(f"[DEBUG] FAISS search distances: {distances}")
+                print(f"[DEBUG] FAISS search indices: {indices}")
 
-                if idx < 0:  # FAISS returns -1 for empty slots
-                    # print(f"Skipping idx {idx} (empty slot)")
-                    continue
+                # Process FAISS results
+                for i, (distance, idx) in enumerate(zip(distances[0], indices[0])):
+                    print(f"[DEBUG] Result {i}: distance={distance}, idx={idx}")
+                    if idx < 0 or idx >= len(self.tab_embeddings):  # FAISS returns -1 for empty slots
+                        print(f"[DEBUG] Skipping idx {idx} (invalid index)")
+                        continue
+                        
+                    # Find tab data by FAISS index
+                    tab_key = None
+                    for key, data in self.tab_embeddings.items():
+                        if data.get('faiss_index') == idx:
+                            tab_key = key
+                            break
                     
-                # Find tab data by FAISS index
-                tab_key = None
-                for key, data in self.tab_embeddings.items():
-                    if data.get('faiss_index') == idx:
-                        tab_key = key
-                        break
-                
-                if tab_key and distance >= 0.3:  # Remove threshold for now to debug
-                    tab_data = self.tab_embeddings[tab_key]
-                    bm25_score = bm25_scores[tab_keys.index(tab_key)]
-                    faiss_score = 1 - distance  # lower distance = higher similarity
-                    hybrid_score = 0.5 * faiss_score + 0.5 * bm25_score
-                    # hybrid_score = faiss_score
-
-                    results.append({
-                        'tab_id': tab_data['tab_data'].get('id'),
-                        'window_id': tab_data['tab_data'].get('windowId'),
-                        'title': tab_data['tab_data'].get('title', ''),
-                        'url': tab_data['tab_data'].get('url', ''),
-                        'similarity': float(distance),
-                        'searchable_text': tab_data['searchable_text'][:200] + '...' if len(tab_data['searchable_text']) > 200 else tab_data['searchable_text'],
-                        'hybrid_score': hybrid_score
-                    })
+                    if tab_key:
+                        tab_data = self.tab_embeddings[tab_key]
+                        faiss_score = 1 - distance
+                        results.append({
+                            'tab_id': tab_data['tab_data'].get('id'),
+                            'window_id': tab_data['tab_data'].get('windowId'),
+                            'title': tab_data['tab_data'].get('title', ''),
+                            'url': tab_data['tab_data'].get('url', ''),
+                            'similarity': float(distance),
+                            'searchable_text': tab_data['searchable_text'][:200] + '...' if len(tab_data['searchable_text']) > 200 else tab_data['searchable_text'],
+                            'faiss_score': faiss_score
+                        })
+                        
+            except Exception as faiss_error:
+                print(f"[DEBUG] FAISS search failed: {faiss_error}")
+                # Fallback to direct embedding comparison
+                results = self._search_with_direct_comparison(query_embedding)
             
-            # Sort by similarity score (already sorted by FAISS, but ensure order)
-            results.sort(key=lambda x: x['hybrid_score'], reverse=True)
-            print(f"Final results count: {len(results)}")
+            # Add BM25 lexical search
+            if results:
+                bm25_model, corpus, tab_keys = self.build_bm25_corpus()
+                tokenized_query = self.tokenize(query)
+                bm25_scores = bm25_model.get_scores(tokenized_query)
+                
+                # Combine FAISS and BM25 scores
+                for result in results:
+                    tab_key = f"{result['tab_id']}_{result['window_id']}"
+                    if tab_key in tab_keys:
+                        bm25_score = bm25_scores[tab_keys.index(tab_key)]
+                        faiss_score = result.get('faiss_score', 0)
+                        hybrid_score = 0.7 * faiss_score + 0.4 * bm25_score
+                        result['hybrid_score'] = hybrid_score
+                    else:
+                        result['hybrid_score'] = result.get('faiss_score', 0)
+                
+                # Sort by hybrid score
+                results.sort(key=lambda x: x['hybrid_score'], reverse=True)
+            
+            print(f"[DEBUG] Final results count: {len(results)}")
             return results[:10]  # Return top 10 results
             
         except Exception as e:
@@ -534,6 +508,33 @@ class Router:
             import traceback
             traceback.print_exc()
             return []
+
+    def _search_with_direct_comparison(self, query_embedding):
+        """Fallback search using direct embedding similarity when FAISS fails"""
+        results = []
+        
+        for tab_key, tab_data in self.tab_embeddings.items():
+            try:
+                # Calculate cosine similarity directly
+                embedding = tab_data['embedding']
+                similarity = np.dot(query_embedding, embedding)
+                
+                results.append({
+                    'tab_id': tab_data['tab_data'].get('id'),
+                    'window_id': tab_data['tab_data'].get('windowId'),
+                    'title': tab_data['tab_data'].get('title', ''),
+                    'url': tab_data['tab_data'].get('url', ''),
+                    'similarity': float(1 - similarity),  # Convert to distance
+                    'searchable_text': tab_data['searchable_text'][:200] + '...' if len(tab_data['searchable_text']) > 200 else tab_data['searchable_text'],
+                    'faiss_score': similarity
+                })
+            except Exception as e:
+                print(f"Error calculating similarity for tab {tab_key}: {e}")
+                continue
+        
+        # Sort by similarity score
+        results.sort(key=lambda x: x['faiss_score'], reverse=True)
+        return results[:10]
 
     def open_tab_api(self):
         """API endpoint to open a tab"""
