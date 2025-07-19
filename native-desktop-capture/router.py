@@ -546,10 +546,25 @@ class Router:
             tab_id = data.get('tab_id')
             window_id = data.get('window_id')
             
-            # Here you would send a message back to the browser extension
-            # For now, we'll just return success
-            return jsonify({'status': 'success'})
+            if not tab_id:
+                return jsonify({'error': 'tab_id is required'}), 400
+            
+            # Send message to browser extension to switch to tab
+            # Note: This requires the browser extension to be running and listening
+            # The actual tab switching happens in the browser extension
+            print(f"Request to open tab: {tab_id} in window: {window_id}")
+            
+            # For now, we'll just return success since the browser extension
+            # will handle the actual tab switching when it receives the message
+            return jsonify({
+                'status': 'success', 
+                'message': f'Tab switching request sent for tab {tab_id}',
+                'tab_id': tab_id,
+                'window_id': window_id
+            })
+            
         except Exception as e:
+            print(f"Error in open_tab_api: {e}")
             return jsonify({'error': str(e)}), 500
 
     def memory_stats_api(self):

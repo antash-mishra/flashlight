@@ -9,6 +9,11 @@ import webbrowser
 from datetime import datetime
 import db
 import router
+import json
+import subprocess
+import sys
+import os
+from native_messaging import NativeMessaging
 
 class TabSearchApp:
     def __init__(self):
@@ -18,6 +23,9 @@ class TabSearchApp:
         
         # Start Flask server in background thread with FAISS storage
         self.router = router.Router()
+
+        self.native_messaging = NativeMessaging()
+        
 
     def setup_ui(self):
         """Create Spotlight-like interface"""
@@ -417,7 +425,6 @@ class TabSearchApp:
         self.results_listbox.add(row)
         row.show_all()
 
-
     def on_tab_selected(self, listbox, row):
         """Handle tab selection"""
         if row and hasattr(row, 'tab_data'):
@@ -425,16 +432,16 @@ class TabSearchApp:
             
             # Send message to browser extension to switch to tab
             try:
-                response = requests.post('http://localhost:8080/open-tab', json={
+                success = self.native_messaging.send_message('openTab', {
                     'tab_id': tab_data['tab_id'],
-                    'window_id': tab_data['window_id']
+                    'window_id': tab_data['window_id'] 
                 })
                 
-                if response.ok:
-                    self.update_status(f"Switched to tab: {tab_data['title']}")
+                if success:
+                    self.update_status(f"✅ Tab switching request sent: {tab_data['title']}")
                 else:
-                    self.update_status("Failed to switch tab")
-                    
+                    self.update_status(f"❌ Failed to send tab switching request: {tab_data['title']}")
+  
             except Exception as e:
                 print(f"Error switching tab: {e}")
                 self.update_status("Error switching tab")

@@ -1,3 +1,5 @@
+let port  = chrome.runtime.connectNative("ping_pong");
+
 // Listen for tab updates
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'complete' && tab.url) {
@@ -377,8 +379,140 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true; // Will respond asynchronously  
   }
+
+  if (request.action === 'openTab') {
+    const { tab_id, window_id } = request;
+    
+    // Use promises instead of async/await in message listener
+    const openTab = async () => {
+      try {
+        // First, activate the window if window_id is provided
+        if (window_id) {
+          await chrome.windows.update(window_id, { focused: true });
+        }
+        
+        // Then activate the specific tab
+        if (tab_id) {
+          await chrome.tabs.update(tab_id, { active: true });
+        }
+        
+        sendResponse({ success: true, message: 'Tab activated successfully' });
+      } catch (error) {
+        console.error('Error opening tab:', error);
+        sendResponse({ success: false, message: 'Failed to open tab: ' + error.message });
+      }
+    };
+    
+    openTab();
+    return true; // Will respond asynchronously
+  }
 });
 
+
+// Send message to native host
+function sendNativeMessage(message) {
+  if (nativePort && nativeConnected) {
+    try {
+      nativePort.postMessage(message);
+      console.log('Sent message to native host:', message);
+    } catch (error) {
+      console.error('Error sending message to native host:', error);
+    }
+  } else {
+    console.warn('Native messaging not connected');
+  }
+}
+
+// Handle open tab request from native app
+async function handleOpenTabRequest(data) {
+  const { tab_id, window_id } = data;
+  
+  try {
+    // First, activate the window if window_id is provided
+    if (window_id) {
+      await chrome.windows.update(window_id, { focused: true });
+    }
+    
+    // Then activate the specific tab
+    if (tab_id) {
+      await chrome.tabs.update(tab_id, { active: true });
+    }
+    
+    console.log(`✅ Tab ${tab_id} activated successfully`);
+    
+    // Send confirmation back to native app
+    sendNativeMessage({
+      action: 'openTab',
+      success: true,
+      message: `Tab ${tab_id} activated successfully`
+    });
+    
+  } catch (error) {
+    console.error('Error opening tab:', error);
+    sendNativeMessage({
+      action: 'openTab',
+      success: false,
+      error: error.message
+    });
+  }
+}
+
+
+function handleNativeMessage(message) {
+  const { action, source, data } = message;
+  
+  console.log(`Received ${action} from ${source}:`, data);
+  
+  switch (action) {
+    case 'openTab':
+      // Native app wants to open a tab
+      handleOpenTabRequest(data);
+      break;
+      
+    // case 'searchTabs':
+    //   // Native app wants search results
+    //   handleSearchRequest(data);
+    //   break;
+      
+    // case 'getTabStats':
+    //   // Native app wants tab statistics
+    //   handleStatsRequest(data);
+    //   break;
+      
+    default:
+      console.log('Unknown action from native host:', action);
+  }
+}
+
+
+// port.onMessage.addListener((response) => {
+//   console.log('Received message from native host:', response);
+// })
+
+port.onMessage.addListener((message) => {
+  console.log('Received message from native host:', message);
+  handleNativeMessage(message);
+});
+
+/*
+Listen for the native messaging port closing.
+*/
+port.onDisconnect.addListener((port) => {
+  if (port.error) {
+    console.log(`Disconnected due to an error: ${port.error.message}`);
+  } else {
+    // The port closed for an unspecified reason. If this occurred right after
+    // calling `browser.runtime.connectNative()` there may have been a problem
+    // starting the the native messaging client in the first place.
+    // https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging#troubleshooting
+    console.log(`Disconnected`, port);
+  }
+});
+
+chrome.action.onClicked.addListener(() => {
+  console.log("Sending:  ping");
+  port.postMessage("ping");
+});
 
 async function syncWithDesktopApp() {
   try {

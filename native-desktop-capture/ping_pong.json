@@ -1,0 +1,9 @@
+{
+  "name": "ping_pong",
+  "description": "Native messaging host for tab search application",
+  "path": "/home/antash/workspace/data-capture/native-desktop-capture/ping_pong.py",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://mnjafflgplfjjdjbinkidajdelpaaflh/"
+  ]
+}

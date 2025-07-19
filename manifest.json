@@ -9,13 +9,16 @@
       "storage",
       "activeTab",
       "scripting",
-      "windows"
+      "windows",
+      "nativeMessaging"
     ],
     "host_permissions": ["https://*/*"],
 
     "background": {
-      "service_worker": "background.js"
+      "service_worker": "background.js",
+      "type": "module"
     },
+  
     
     "action": {
       "default_popup": "popup.html",
