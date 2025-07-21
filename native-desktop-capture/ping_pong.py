@@ -183,6 +183,22 @@ def sendMessage(encodedMessage):
     sys.stdout.buffer.write(encodedMessage['content'])
     sys.stdout.buffer.flush()
 
+
+def send_message_to_extension(message):
+    """Send a message to the browser extension"""
+    try:
+        # Chrome requires messages to be prefixed with message length
+        message_json = json.dumps(message)
+        message_bytes = message_json.encode('utf-8')
+        message_length = struct.pack('@I', len(message_bytes))
+        
+        # Write to stdout (Chrome reads from stdin)
+        sys.stdout.buffer.write(message_length + message_bytes)
+        sys.stdout.buffer.flush()
+        print(f"Sent to extension: {message}", file=sys.stderr)
+    except Exception as e:
+        print(f"Error sending to extension: {e}", file=sys.stderr)
+
 # while True:
 #     # receivedMessage = getMessage()
 #     # if receivedMessage == "ping":
@@ -190,6 +206,6 @@ def sendMessage(encodedMessage):
 #     host = NativeMessagingHost()
 
 
-if __name__ == "__main__":
-    host = NativeMessagingHost()
-    host.run()
+# if __name__ == "__main__":
+#     host = NativeMessagingHost()
+#     host.run()

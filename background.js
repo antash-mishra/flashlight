@@ -1,4 +1,19 @@
 let port  = chrome.runtime.connectNative("ping_pong");
+const socket = new WebSocket("ws://0.0.0.0:8080/ws");
+
+socket.addEventListener("open", () => {
+  console.log("WebSocket connection established");
+});
+
+socket.onmessage = (event) => {
+  console.log("Message from desktop app:", event.data);
+  try {
+    const message = JSON.parse(event.data);
+    handleNativeMessage(message);
+  } catch (error) {
+    console.error("Error parsing message from desktop app:", error);
+  }
+};
 
 // Listen for tab updates
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -362,22 +377,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'sendToDesktop') {
     chrome.storage.local.get(['openTabs', 'tabIndex', 'lastUpdated'], async (result) => {
       try {
-        const response = await fetch('http://localhost:8080/update-tabs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(result)
-        });
+        // const response = await fetch('http://localhost:8080/update-tabs', {
+        //   method: 'POST',
+        //   headers: { 'Content-Type': 'application/json' },
+        //   body: JSON.stringify(result)
+        // });
 
-        if (response.ok) {
-          sendResponse({ success: true, message: 'Data sent to desktop app' });
-        } else {
-          sendResponse({ success: false, message: 'Desktop app responded with error' });
-        }
+        const response = socket.send(JSON.stringify(result));
+        console.log('Sent data to desktop app of length:', JSON.stringify(result).length);
       } catch (error) {
         sendResponse({ success: false, message: 'Desktop app not reachable' });
       }
     });
-    return true; // Will respond asynchronously  
+    return true; // Will respond asynchronously
   }
 
   if (request.action === 'openTab') {
@@ -459,9 +471,9 @@ async function handleOpenTabRequest(data) {
 
 
 function handleNativeMessage(message) {
-  const { action, source, data } = message;
+  const { action, data } = message;
   
-  console.log(`Received ${action} from ${source}:`, data);
+  console.log(`Received ${action} from native-app:`, data);
   
   switch (action) {
     case 'openTab':
@@ -517,11 +529,12 @@ chrome.action.onClicked.addListener(() => {
 async function syncWithDesktopApp() {
   try {
     const data = await chrome.storage.local.get(['openTabs', 'tabIndex', 'lastUpdated']);
-    await fetch('http://localhost:8080/update-tabs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
+    socket.send(JSON.stringify(data));
+    // await fetch('http://localhost:8080/update-tabs', {
+    //   method: 'POST',
+    //   headers: { 'Content-Type': 'application/json' },
+    //   body: JSON.stringify(data)
+    // });
   } catch (error) {
     console.log('Desktop app sync failed:', error);
   }

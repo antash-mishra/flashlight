@@ -3,17 +3,18 @@ gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, Gdk, GLib, Pango
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from flask import Flask, request, jsonify
-import requests
-import webbrowser
 from datetime import datetime
-import db
-import router
-import json
-import subprocess
-import sys
-import os
-from native_messaging import NativeMessaging
+from ws_router import send_message_to_extension
+import threading
+from vecstore import VectorStore
+
+def start_ws_server():
+    import uvicorn
+    uvicorn.run("ws_router:app", host="0.0.0.0", port=8080, reload=False)
+
+# Start the WebSocket server in a background thread (like Flask server was)
+ws_thread = threading.Thread(target=start_ws_server, daemon=True)
+ws_thread.start()
 
 class TabSearchApp:
     def __init__(self):
@@ -21,10 +22,9 @@ class TabSearchApp:
         # Create GTK window
         self.setup_ui()
         
-        # Start Flask server in background thread with FAISS storage
-        self.router = router.Router()
 
-        self.native_messaging = NativeMessaging()
+        # self.native_messaging = NativeMessaging()
+        self.vectorstore = VectorStore()
         
 
     def setup_ui(self):
@@ -314,13 +314,13 @@ class TabSearchApp:
             self.results_listbox.remove(child)
         
         # Trigger embedding update if needed
-        if not self.router.tab_embeddings:
-            self.router.trigger_embedding_update()
+        if not self.vectorstore.tab_embeddings:
+            self.vectorstore.trigger_embedding_update()
             self.update_status("Processing embeddings...")
             return
         
         # Perform search
-        results = self.router.search_tabs(query)
+        results = self.vectorstore.search(query)
         
         if not results:
             self.update_status("No results found")
@@ -344,13 +344,13 @@ class TabSearchApp:
             return
         
         # Trigger embedding update if needed
-        if not self.router.tab_embeddings:
-            self.router.trigger_embedding_update()
+        if not self.vectorstore.tab_embeddings:
+            self.vectorstore.trigger_embedding_update()
             self.update_status("Processing embeddings...")
             return
         
         # Perform search
-        results = self.router.search_tabs(query)
+        results = self.vectorstore.search(query)
         
         if not results:
             self.update_status("No results found")
@@ -429,19 +429,16 @@ class TabSearchApp:
         """Handle tab selection"""
         if row and hasattr(row, 'tab_data'):
             tab_data = row.tab_data
-            
-            # Send message to browser extension to switch to tab
             try:
-                success = self.native_messaging.send_message('openTab', {
-                    'tab_id': tab_data['tab_id'],
-                    'window_id': tab_data['window_id'] 
+                # Send message to browser extension via WebSocket
+                send_message_to_extension({
+                    'action': 'openTab',
+                    'data': {
+                        'tab_id': tab_data['tab_id'],
+                        'window_id': tab_data['window_id']
+                    } 
                 })
-                
-                if success:
-                    self.update_status(f"✅ Tab switching request sent: {tab_data['title']}")
-                else:
-                    self.update_status(f"❌ Failed to send tab switching request: {tab_data['title']}")
-  
+                self.update_status(f"✅ Tab switching request sent: {tab_data['title']}")
             except Exception as e:
                 print(f"Error switching tab: {e}")
                 self.update_status("Error switching tab")
