@@ -12,26 +12,33 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 import threading
+from sentence_transformers.cross_encoder import CrossEncoder
 
 class VectorStore:
-    def __init__(self, model_name: str = "all-mpnet-base-v2"):
+    def __init__(self, model_name: str = "BAAI/bge-large-en-v1.5"):
         print("Loading embedding model...")
         self.model = SentenceTransformer(model_name)
-        self.dimension = 768  # all-mpnet-base-v2 dimension
+        self.dimension = self.model.get_sentence_embedding_dimension()  # BAAI/bge-large-en-v1.5 dimension
         self.index = faiss.IndexFlatIP(self.dimension)
 
+        # save all tabs
+        self.all_tabs = {}
+        self.client_hashes = {}  # Track last hash per client: {client_id: hash}
+        
         # Tab data storage
         self.current_tabs = {}
         self.tab_embeddings = {}
         self.tab_index_map = {}  # Maps tab_id to FAISS index position
         self.last_tab_index_hash = None  # Hash of tabIndex for change detection
-
+        
         # Memory persistence
         self.memory_file = 'tab_memory.pkl'
         self.index_file = 'faiss_index.bin'
+        self.reranker = CrossEncoder('BAAI/bge-reranker-large')
 
         # Load existing data from memory
         self.load_from_memory()
+
 
     def save_to_memory(self):
         """Save tab data and FAISS index to disk"""
@@ -41,6 +48,8 @@ class VectorStore:
                 'tab_index_map': self.tab_index_map,
                 'last_tab_index_hash': self.last_tab_index_hash,
                 'current_tabs': self.current_tabs,
+                'all_tabs': self.all_tabs,
+                'client_hashes': self.client_hashes,
                 'timestamp': datetime.now().isoformat()
             }
             with open(self.memory_file, 'wb') as f:
@@ -60,6 +69,8 @@ class VectorStore:
                 self.tab_index_map = memory_data.get('tab_index_map', {})
                 self.last_tab_index_hash = memory_data.get('last_tab_index_hash')
                 self.current_tabs = memory_data.get('current_tabs', {})
+                self.all_tabs = memory_data.get('all_tabs', {})
+                self.client_hashes = memory_data.get('client_hashes', {})
                 self.index = faiss.read_index(self.index_file)
                 print(f"✅ Loaded {len(self.tab_embeddings)} tabs from memory")
                 print(f"✅ FAISS index loaded with {self.index.ntotal} vectors")
@@ -71,6 +82,8 @@ class VectorStore:
             self.tab_index_map = {}
             self.last_tab_index_hash = None
             self.current_tabs = {}
+            self.all_tabs = {}
+            self.client_hashes = {}
 
     def clear_memory(self):
         try:
@@ -82,6 +95,8 @@ class VectorStore:
             self.tab_index_map = {}
             self.last_tab_index_hash = None
             self.current_tabs = {}
+            self.all_tabs = {}
+            self.client_hashes = {}
             self.index = faiss.IndexFlatIP(self.dimension)
             print("✅ Memory cleared")
         except Exception as e:
@@ -104,6 +119,35 @@ class VectorStore:
     def _hash_tab_index(self, tab_index):
         return hashlib.md5(json.dumps(tab_index, sort_keys=True).encode()).hexdigest()
 
+    def update_client_tabs(self, client_id, open_tabs, tab_index):
+        """Update tabs for a specific client only if data changed"""
+        current_hash = self._hash_tab_index(tab_index)
+        last_hash = self.client_hashes.get(client_id)
+        
+        if current_hash != last_hash:
+            print(f"Tab changes detected for client {client_id}. Updating...")
+            
+            # Remove old tabs for this specific client
+            self.all_tabs = {k: v for k, v in self.all_tabs.items() if k[2] != client_id}
+            
+            # Add new tabs for this client
+            for tab in open_tabs:
+                key = (tab['id'], tab['windowId'], client_id)
+                self.all_tabs[key] = tab
+            
+            # Update client hash
+            self.client_hashes[client_id] = current_hash
+            
+            # Rebuild embeddings from ALL tabs (all clients)
+            all_tabs_list = list(self.all_tabs.values())
+            if all_tabs_list:
+                self.update_index(all_tabs_list, tab_index)
+            
+            self.save_to_memory()
+            print(f"✅ Updated tabs for client {client_id}. Total tabs: {len(self.all_tabs)}")
+        else:
+            print(f"No tab changes detected for client {client_id}. Skipping re-indexing.")
+
     def update_index(self, tabs: List[Dict], tab_index: Any) -> None:
         try:
             print("Processing embeddings and updating FAISS index...")
@@ -121,7 +165,7 @@ class VectorStore:
                 tab_data_list.append(tab)
             embeddings = self._encode_with_optimization(searchable_texts)
             embeddings = self._normalize_embeddings(embeddings)
-            new_index.add(x=embeddings.astype('float32'))
+            new_index.add(embeddings.astype('float32'))
             print(f"[DEBUG] After adding, new FAISS index size: {new_index.ntotal}")
             for i, (tab, embedding) in enumerate(zip(tab_data_list, embeddings)):
                 tab_id = tab.get('id')
@@ -245,6 +289,7 @@ class VectorStore:
         return bm25, corpus, tab_keys
 
     def search(self, query: str):
+        # print("Tab Data: ", self.all_tabs);
         if not query or not self.tab_embeddings:
             print("[DEBUG] Empty query or no tab embeddings.")
             return []
@@ -304,8 +349,16 @@ class VectorStore:
                     else:
                         result['hybrid_score'] = result.get('faiss_score', 0)
                 
-                # Sort by hybrid score
-                results.sort(key=lambda x: x['hybrid_score'], reverse=True)
+                # # Sort by hybrid score
+                # results.sort(key=lambda x: x['hybrid_score'], reverse=True)
+
+                # rerank the crossEncoder
+                rerank_pairs = [(query, r['searchable_text']) for r in results]
+                rerank_scores = self.reranker.predict(rerank_pairs)
+                for r, rerank_score in zip(results, rerank_scores):
+                    r['rerank_score'] = float(rerank_score)
+                results.sort(key=lambda x: x['rerank_score'], reverse=True)
+
             
             print(f"[DEBUG] Final results count: {len(results)}")
             return results[:10]  # Return top 10 results

@@ -57,16 +57,17 @@ manager = ConnectionManager()
 vectorstore = VectorStore()
 
 def handle_update_tabs(data):
+    print("[WS] Connected clients: ", manager.get_connections())
     open_tabs = data.get('openTabs', [])
     tab_index = data.get('tabIndex', {})
-    # Hash to check if update is needed
-    current_hash = vectorstore._hash_tab_index(tab_index)
-    if current_hash != vectorstore.last_tab_index_hash:
-        print(f"Tab changes detected. Updating FAISS index...")
-        vectorstore.update_index(open_tabs, tab_index)
-        vectorstore.last_tab_index_hash = current_hash
-    else:
-        print("No tab changes detected. Skipping re-indexing.")
+    client_id = data.get('clientId', 'unknown')
+    
+    print(f"Received update from client: {client_id}")
+    print("Received tabIndex:", tab_index)
+    
+    # Use new client-specific update method
+    vectorstore.update_client_tabs(client_id, open_tabs, tab_index)
+    
     return {"status": "success", "received": len(open_tabs)}
 
 def handle_search_tabs(data):
@@ -92,13 +93,14 @@ def handle_memory_clear(data):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
+    print("[WS] Client connected")
     try:
         while True:
             data = await websocket.receive_text()
             try:
                 message = json.loads(data)
                 
-                print("MEssage from extension: ", message)
+                # print("MEssage from extension: ", message)
 
                 action = message.get('action')
                 if action == 'updateTabs':

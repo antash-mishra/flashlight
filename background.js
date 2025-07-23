@@ -1,5 +1,5 @@
 let port  = chrome.runtime.connectNative("ping_pong");
-const socket = new WebSocket("ws://0.0.0.0:8080/ws");
+const socket = new WebSocket("ws://localhost:8080/ws");
 
 socket.addEventListener("open", () => {
   console.log("WebSocket connection established");
@@ -251,11 +251,12 @@ async function storeTabData(tabData) {
     await chrome.storage.local.set({
       openTabs,
       tabIndex,
+      clientId: chrome.runtime.id, 
       lastUpdated: new Date().toISOString()
     });
 
     console.log(`Stored tab data: ${tabData.title} (Total open tabs: ${openTabs.length})`);
-
+    console.log("Client ID: ", chrome.runtime.id);
     // Auto-sync to desktop app
     syncWithDesktopApp();
 
@@ -285,6 +286,7 @@ async function removeTabData(tabId) {
       await chrome.storage.local.set({
         openTabs,
         tabIndex,
+        clientId: chrome.runtime.id,
         lastUpdated: new Date().toISOString()
       });
 
@@ -419,22 +421,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // Will respond asynchronously
   }
 });
-
-
-// Send message to native host
-function sendNativeMessage(message) {
-  if (nativePort && nativeConnected) {
-    try {
-      nativePort.postMessage(message);
-      console.log('Sent message to native host:', message);
-    } catch (error) {
-      console.error('Error sending message to native host:', error);
-    }
-  } else {
-    console.warn('Native messaging not connected');
-  }
-}
-
 // Handle open tab request from native app
 async function handleOpenTabRequest(data) {
   const { tab_id, window_id } = data;
@@ -453,19 +439,19 @@ async function handleOpenTabRequest(data) {
     console.log(`✅ Tab ${tab_id} activated successfully`);
     
     // Send confirmation back to native app
-    sendNativeMessage({
+    socket.send(JSON.stringify({
       action: 'openTab',
       success: true,
       message: `Tab ${tab_id} activated successfully`
-    });
+    }));
     
   } catch (error) {
     console.error('Error opening tab:', error);
-    sendNativeMessage({
+    socket.send(JSON.stringify({
       action: 'openTab',
       success: false,
       error: error.message
-    });
+    }));
   }
 }
 
@@ -529,7 +515,9 @@ chrome.action.onClicked.addListener(() => {
 async function syncWithDesktopApp() {
   try {
     const data = await chrome.storage.local.get(['openTabs', 'tabIndex', 'lastUpdated']);
+    data.clientId = chrome.runtime.id;  // Add clientId to data
     socket.send(JSON.stringify(data));
+    console.log('Sent data to desktop app:', data);
     // await fetch('http://localhost:8080/update-tabs', {
     //   method: 'POST',
     //   headers: { 'Content-Type': 'application/json' },
